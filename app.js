@@ -1,10 +1,23 @@
+require("dotenv").config();
 const express = require("express");
 const bodyParser = require("body-parser");
 const mongoose = require("mongoose")
 const _ = require("lodash");
+const ejs = require("ejs");
+const md5 = require ("md5");
+const session = require('express-session');
 const date = require(__dirname + "/date.js");
 
 const app = express();
+
+app.use(session({
+  secret: 'Thisisourlittlesecret',
+  resave: false,            
+  saveUninitialized: true,  
+  cookie: {                
+    maxAge: 24 * 60 * 60 * 1000  
+  }
+}));
 
 app.set('view engine', 'ejs');
 
@@ -43,25 +56,44 @@ const listSchema  = new mongoose.Schema({
 
 const  List = mongoose.model("List", listSchema);
 
-app.get("/", function(req, res) {
-
-  
-  Item.find({}).then(function(foundItems){
-    if(foundItems.length === 0){
-      Item.insertMany(defaultItems).then(function(){
-        console.log("Defaul  items added");
-      }).catch(function(error){
-        console.log(error);
-      })
-      res.redirect("/");
-    } else{
-      res.render("list", {listTitle: day, newListItems: foundItems});
-    }
-
-  }).catch(function(error){
-    console.log(error);
-  })
+const userSchema = new mongoose.Schema({
+  email: String,
+  password: String,
+  items:[itemSchema]
 });
+
+const User = mongoose.model("User", userSchema);
+
+app.get("/", function(req, res) {
+  res.render("login")
+});
+
+
+
+app.get("/register",  function(req, res){
+  res.render("register");
+});
+  
+
+app.get("/todo", function(req, res) {
+  const userEmail = req.session.userEmail;
+
+  if (!userEmail) {
+    return res.redirect("/");  
+  }
+
+
+  User.findOne({ email: userEmail }).then(function(foundUser) {
+    if (foundUser) {
+      res.render("list", { listTitle: day, newListItems: foundUser.items });
+    } else {
+      res.status(404).send("User not found");
+    }
+  }).catch(function(error) {
+    console.log(error);
+  });
+});
+
 
 
 app.get("/:customListName", function(req, res){
@@ -89,31 +121,73 @@ app.get("/:customListName", function(req, res){
 
 });
 
+app.post("/", function(req, res) {
+  const username = req.body.username;
+  const password = md5(req.body.password);
+
+  User.findOne({ email: username }).then(function(foundUser) {
+    if (foundUser) {
+      if (foundUser.password === password) {
+        req.session.userEmail = username;  // Store user's email in session
+        res.redirect("/todo");
+      } else {
+        res.status(401).send("Invalid password");
+      }
+    } else {
+      res.status(404).send("User not found");
+    }
+  }).catch(function(error) {
+    console.log(error);
+  });
+});
 
 
-app.post("/", function(req, res){
 
+app.post("/register", function(req, res) {
+  const newUser = new User({
+    email: req.body.username,
+    password: md5(req.body.password),
+    items: []  // Initialize items as an empty array
+  });
+
+  newUser.save().then(function(savedUser) {
+    savedUser.items.push(...defaultItems);
+    return savedUser.save();
+  }).then(function(){
+    res.redirect("/");
+  }).catch(function(error) {
+    console.log(error);
+    res.status(500).send("An error occured while registering the user.")
+  });
+});
+
+
+
+
+
+app.post("/todo", function(req, res) {
   const itemName = req.body.newItem;
-  const listName = req.body.list;
+  const userEmail = req.session.userEmail;  // Get the logged-in user's email from session
+
+  if (!userEmail) {
+    return res.redirect("/");  // If not logged in, redirect to login
+  }
 
   const item = new Item({
     name: itemName
   });
 
-  if(listName === day){
-    item.save();
-    res.redirect("/");
-  } else{
-    List.findOne({name: _.lowerCase(listName)}).then(function(foundList){
-      foundList.items.push(item);
-      foundList.save();
-      res.redirect("/" + listName);
-    }).catch(function(error){
-      console.log(error);
+  // Find the user by email and add the new item to their items array
+  User.findOne({ email: userEmail }).then(function(foundUser) {
+    foundUser.items.push(item);
+    foundUser.save().then(function() {
+      res.redirect("/todo");
     });
-  }
-
+  }).catch(function(error) {
+    console.log(error);
+  });
 });
+
 
 
 app.post("/delete", function(req, res){
